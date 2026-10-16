@@ -36,11 +36,9 @@ jobs:
           before="${{ github.event.before }}"
           after="${{ github.sha }}"
           if [[ -z "$before" || "$before" =~ ^0+$ ]]; then
-            if git rev-parse --verify "${after}^" >/dev/null 2>&1; then
-              before="${after}^"
-            else
-              before=""
-            fi
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "Initial push: package the current module version."
+            exit 0
           fi
 
           if [[ -z "$before" ]] || ! git diff --quiet "$before" "$after" -- module.prop; then
