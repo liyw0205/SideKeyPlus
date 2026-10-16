@@ -1,0 +1,10 @@
+# Local build outputs and downloaded toolchains
+*.zip
+*.class
+r8-*.jar
+out/
+
+# Editor and test caches
+.DS_Store
+.pytest_cache/
+__pycache__/
