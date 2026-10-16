@@ -228,9 +228,12 @@ print_json_header
 
 BACKEND_PID="$(cat "$PID_DIR/backend.pid" 2>/dev/null)"
 HTTPD_PID="$(cat "$PID_DIR/httpd.pid" 2>/dev/null)"
+KEYD_PID="$(cat "$PID_DIR/keyd.pid" 2>/dev/null)"
 
 echo "{"
 echo "\"backend_running\":$(is_pid_alive "$BACKEND_PID" && echo true || echo false),"
+echo "\"keyd_running\":$(is_pid_alive "$KEYD_PID" && echo true || echo false),"
+echo "\"keyd_pid\":\"$(printf '%s' "$KEYD_PID" | json_escape)\","
 echo "\"httpd_running\":$(is_pid_alive "$HTTPD_PID" && echo true || echo false),"
 echo "\"slider_value\":\"$(slider_value)\","
 echo "\"config\":{"
@@ -568,8 +571,81 @@ EOF
 backend_loop() {
   logi "后端线程启动"
 
-  if [ "$(config_get BACKEND_ENABLE)" != "true" ]; then
-    logw "BACKEND_ENABLE != true，后端退出"
+  BACKEND_CONFIG_SIG=""
+  BACKEND_ENABLED="false"
+  BACKEND_ENABLED_OK=false
+  BACKEND_NS="global"
+  BACKEND_KEY="alert_slider_mode"
+  BACKEND_VUP=1
+  BACKEND_VMID=2
+  BACKEND_VDOWN=3
+  BACKEND_INTERVAL=0.5
+  BACKEND_UP_TYPE=0
+  BACKEND_UP_RESET_TYPE=0
+  BACKEND_DOWN_TYPE=0
+  BACKEND_DOWN_RESET_TYPE=0
+
+  backend_refresh_config() {
+    sig="$(bb stat -c '%Y:%s' "$CONFIG_PATH" 2>/dev/null)"
+    [ -n "$sig" ] || sig=missing
+    [ "$sig" = "$BACKEND_CONFIG_SIG" ] && return 0
+    BACKEND_CONFIG_SIG="$sig"
+
+    BACKEND_ENABLED="$(config_get BACKEND_ENABLE)"
+    if config_bool "$BACKEND_ENABLED"; then
+      BACKEND_ENABLED_OK=true
+    else
+      BACKEND_ENABLED_OK=false
+    fi
+    BACKEND_NS="$(config_get SLIDER_SETTINGS_NS)"
+    BACKEND_KEY="$(config_get SLIDER_SETTINGS_KEY)"
+    BACKEND_VUP="$(config_get VALUE_UP)"
+    BACKEND_VMID="$(config_get VALUE_MID)"
+    BACKEND_VDOWN="$(config_get VALUE_DOWN)"
+    BACKEND_INTERVAL="$(config_get POLL_INTERVAL)"
+    BACKEND_UP_TYPE="$(config_get ACTION_UP_TYPE)"
+    BACKEND_UP_RESET_TYPE="$(config_get ACTION_UP_RESET_TYPE)"
+    BACKEND_DOWN_TYPE="$(config_get ACTION_DOWN_TYPE)"
+    BACKEND_DOWN_RESET_TYPE="$(config_get ACTION_DOWN_RESET_TYPE)"
+
+    [ -n "$BACKEND_NS" ] || BACKEND_NS=global
+    [ -n "$BACKEND_KEY" ] || BACKEND_KEY=alert_slider_mode
+    [ -n "$BACKEND_VUP" ] || BACKEND_VUP=1
+    [ -n "$BACKEND_VMID" ] || BACKEND_VMID=2
+    [ -n "$BACKEND_VDOWN" ] || BACKEND_VDOWN=3
+    [ -n "$BACKEND_INTERVAL" ] || BACKEND_INTERVAL=0.5
+
+    case "$BACKEND_INTERVAL" in
+      ''|*[!0-9.]*|0|0.0|0.00) BACKEND_INTERVAL=0.5 ;;
+    esac
+  }
+
+  backend_has_actions() {
+    [ "${BACKEND_UP_TYPE:-0}" != "0" ] ||
+      [ "${BACKEND_UP_RESET_TYPE:-0}" != "0" ] ||
+      [ "${BACKEND_DOWN_TYPE:-0}" != "0" ] ||
+      [ "${BACKEND_DOWN_RESET_TYPE:-0}" != "0" ]
+  }
+
+  backend_read_slider_value() {
+    v="$(settings get "$BACKEND_NS" "$BACKEND_KEY" 2>/dev/null)"
+    case "$v" in
+      ''|null|*Failure*|*Broken*|*Exception*|*cmd:*) echo '' ;;
+      *) echo "$v" ;;
+    esac
+  }
+
+  backend_valid_slider_value() {
+    [ "$1" = "$BACKEND_VUP" ] || [ "$1" = "$BACKEND_VMID" ] || [ "$1" = "$BACKEND_VDOWN" ]
+  }
+
+  backend_refresh_config
+  if [ "$BACKEND_ENABLED_OK" != "true" ]; then
+    logw "BACKEND_ENABLE 未开启，后端退出"
+    return
+  fi
+  if ! backend_has_actions; then
+    logi "未配置三段键动作，后端不启动以降低耗电"
     return
   fi
 
@@ -577,41 +653,40 @@ backend_loop() {
   i=0
 
   while [ "$i" -lt 20 ]; do
-    LAST="$(read_slider_value)"
-    if is_valid_slider_value "$LAST"; then
+    LAST="$(backend_read_slider_value)"
+    if backend_valid_slider_value "$LAST"; then
       break
     fi
     bb sleep 1
     i=$((i + 1))
   done
 
-  if ! is_valid_slider_value "$LAST"; then
+  if ! backend_valid_slider_value "$LAST"; then
     logw "初始三段键值无效：$LAST，默认按中间处理"
-    LAST="$(config_get VALUE_MID)"
-    [ -z "$LAST" ] && LAST=2
+    LAST="$BACKEND_VMID"
   fi
 
   echo "[$(now)] BACKEND_INIT LAST=$LAST" >> "$BACKEND_LOG"
 
   while true; do
-    if [ "$(config_get BACKEND_ENABLE)" != "true" ]; then
+    backend_refresh_config
+    if [ "$BACKEND_ENABLED_OK" != "true" ]; then
       logi "检测到 BACKEND_ENABLE=false，后端退出"
       break
     fi
+    if ! backend_has_actions; then
+      logi "三段键动作已全部清空，后端退出"
+      break
+    fi
 
-    VUP="$(config_get VALUE_UP)"
-    VMID="$(config_get VALUE_MID)"
-    VDOWN="$(config_get VALUE_DOWN)"
-    INTERVAL="$(config_get POLL_INTERVAL)"
+    VUP="$BACKEND_VUP"
+    VMID="$BACKEND_VMID"
+    VDOWN="$BACKEND_VDOWN"
+    INTERVAL="$BACKEND_INTERVAL"
 
-    [ -z "$VUP" ] && VUP=1
-    [ -z "$VMID" ] && VMID=2
-    [ -z "$VDOWN" ] && VDOWN=3
-    [ -z "$INTERVAL" ] && INTERVAL=0.25
+    CUR="$(backend_read_slider_value)"
 
-    CUR="$(read_slider_value)"
-
-    if ! is_valid_slider_value "$CUR"; then
+    if ! backend_valid_slider_value "$CUR"; then
       bb sleep "$INTERVAL"
       continue
     fi
@@ -672,8 +747,8 @@ stop_keyd() {
 }
 
 start_keyd() {
-  if [ "$(config_get VOLUME_KEY_ENABLE)" != "true" ]; then
-    logw "VOLUME_KEY_ENABLE != true，不启动 keyd"
+  if ! config_bool "$(config_get VOLUME_KEY_ENABLE)"; then
+    logw "VOLUME_KEY_ENABLE 未开启，不启动 keyd"
     stop_keyd
     return
   fi
@@ -720,8 +795,14 @@ start_keyd() {
 }
 
 start_backend() {
-  if [ "$(config_get BACKEND_ENABLE)" != "true" ]; then
-    logw "BACKEND_ENABLE != true，不启动后端"
+  if ! config_bool "$(config_get BACKEND_ENABLE)"; then
+    logw "BACKEND_ENABLE 未开启，不启动后端"
+    stop_backend_only_proc
+    return
+  fi
+
+  if [ "$(config_get ACTION_UP_TYPE)$(config_get ACTION_UP_RESET_TYPE)$(config_get ACTION_DOWN_TYPE)$(config_get ACTION_DOWN_RESET_TYPE)" = "0000" ]; then
+    logi "未配置三段键动作，不启动后端"
     stop_backend_only_proc
     return
   fi
@@ -836,13 +917,13 @@ wait_boot_completed_if_needed
 
 start_httpd
 
-if [ "$(config_get BACKEND_ENABLE)" = "true" ]; then
+if config_bool "$(config_get BACKEND_ENABLE)"; then
   start_backend
 else
   stop_backend_only_proc
 fi
 
-if [ "$(config_get VOLUME_KEY_ENABLE)" = "true" ]; then
+if config_bool "$(config_get VOLUME_KEY_ENABLE)"; then
   start_keyd
 else
   stop_keyd

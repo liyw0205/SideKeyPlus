@@ -426,6 +426,10 @@ code{
           <div class="value"><span id="backendBadge" class="badge off">未运行</span></div>
         </div>
         <div class="stat">
+          <div class="label">音量键服务</div>
+          <div class="value"><span id="keydBadge" class="badge off">未运行</span></div>
+        </div>
+        <div class="stat">
           <div class="label">三段键当前值</div>
           <div class="value" id="sliderValueText">--</div>
         </div>
@@ -486,7 +490,7 @@ code{
 
       <div class="field">
         <label class="label">轮询间隔</label>
-        <input id="POLL_INTERVAL" class="input" type="text" placeholder="0.25">
+        <input id="POLL_INTERVAL" class="input" type="text" placeholder="0.5">
       </div>
     </div>
 
@@ -748,6 +752,7 @@ function updateModeTextFromConfig(cfg){
 async function loadStatusOnly(showMsg=false){
   const data = await api('status');
   setBadge($('backendBadge'), !!data.backend_running);
+  setBadge($('keydBadge'), !!data.keyd_running);
   $('sliderValueText').textContent = data.slider_value || '--';
   updateModeTextFromConfig(data.config || state.config || {});
   if(showMsg) showToast('状态已刷新');
@@ -1193,7 +1198,23 @@ async function saveCurrentAction(){
     payload[`ACTION_${ev}_SHELL`] = state.config[`ACTION_${ev}_SHELL`] ?? '';
 
     const r = await api('save_config', toForm(payload));
-    showToast(r.message || `已保存 ${ev}`);
+    const actionType = String(payload[`ACTION_${ev}_TYPE`] ?? '0');
+    const isVolumeAction = ev.startsWith('VOLUME_');
+    let autoEnabled = false;
+    let backendStarted = false;
+    if(isVolumeAction && actionType !== '0' && !boolStr(state.config.VOLUME_KEY_ENABLE)){
+      await api('save_config', toForm({VOLUME_KEY_ENABLE:'true'}));
+      await api('start_keyd', '');
+      autoEnabled = true;
+    }
+    if(!isVolumeAction && actionType !== '0' && boolStr(state.config.BACKEND_ENABLE)){
+      await api('start_slider_backend', '');
+      backendStarted = true;
+    }
+    let message = r.message || `已保存 ${ev}`;
+    if(autoEnabled) message += '，并已启用音量键服务';
+    if(backendStarted) message += '，三段键后端已启动';
+    showToast(message);
     await loadConfig();
     renderHomeActionOverview();
   }catch(e){
@@ -1441,7 +1462,12 @@ $('qq_group_box').addEventListener('click', async ()=>{
   renderHomeActionOverview();
   state.currentTab = 'home';
   updateFab();
-  state.statusTimer = setInterval(loadStatusOnly, 5000);
+  state.statusTimer = setInterval(()=>{
+    if(!document.hidden) loadStatusOnly();
+  }, 15000);
+  document.addEventListener('visibilitychange', ()=>{
+    if(!document.hidden) loadStatusOnly();
+  });
 })();
 </script>
 </body>

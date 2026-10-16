@@ -373,13 +373,13 @@ selected input device: /dev/input/eventX name=...
 ### 后台运行
 
 ```sh
-su -c 'nohup /data/adb/SideKeyPlus/skp-keyd > /data/adb/SideKeyPlus/keyd.log 2>&1 &'
+su -c 'nohup /data/adb/modules/SideKeyPlus/bin/skp-keyd > /data/adb/SideKeyPlus/log/keyd.log 2>&1 &'
 ```
 
 查看日志：
 
 ```sh
-su -c 'tail -f /data/adb/SideKeyPlus/keyd.log'
+su -c 'tail -f /data/adb/SideKeyPlus/log/keyd.log'
 ```
 
 停止进程：
@@ -401,15 +401,15 @@ MODDIR=${0%/*}
 
 sleep 10
 
-chmod 0755 "$MODDIR/skp-keyd"
+chmod 0755 "$MODDIR/bin/skp-keyd"
 
-nohup "$MODDIR/skp-keyd" > /data/adb/SideKeyPlus/keyd.log 2>&1 &
+nohup "$MODDIR/bin/skp-keyd" > /data/adb/SideKeyPlus/log/keyd.log 2>&1 &
 ```
 
-如果 `skp-keyd` 放在：
+模块安装后 `skp-keyd` 位于：
 
 ```text
-/data/adb/SideKeyPlus/skp-keyd
+/data/adb/modules/SideKeyPlus/bin/skp-keyd
 ```
 
 则可以写：
@@ -419,7 +419,7 @@ nohup "$MODDIR/skp-keyd" > /data/adb/SideKeyPlus/keyd.log 2>&1 &
 
 sleep 10
 
-nohup /data/adb/SideKeyPlus/skp-keyd > /data/adb/SideKeyPlus/keyd.log 2>&1 &
+nohup /data/adb/modules/SideKeyPlus/bin/skp-keyd > /data/adb/SideKeyPlus/log/keyd.log 2>&1 &
 ```
 
 ---
@@ -653,7 +653,13 @@ su -c 'ps -A | grep skp-keyd'
 查看日志：
 
 ```sh
-su -c 'tail -f /data/adb/SideKeyPlus/keyd.log'
+su -c 'tail -f /data/adb/SideKeyPlus/log/keyd.log'
+```
+
+当前版本不需要重启手机。修改 WebUI 配置后会自动刷新；也可以手动执行：
+
+```sh
+su -c '/system/bin/sh /data/adb/modules/SideKeyPlus/service.sh start_keyd_only'
 ```
 
 确认配置：
@@ -678,12 +684,7 @@ BLOCK_VOLUME_KEY=1
 BLOCK_VOLUME_KEY=1
 ```
 
-然后重启 `skp-keyd`：
-
-```sh
-su -c 'pkill skp-keyd'
-su -c 'nohup /data/adb/SideKeyPlus/skp-keyd > /data/adb/SideKeyPlus/keyd.log 2>&1 &'
-```
+然后通过 WebUI 重新保存配置，或执行上面的 `start_keyd_only` 命令。服务会自动清理失效的输入设备并重新扫描。
 
 ---
 
@@ -793,4 +794,4 @@ su -c 'rm -rf /data/adb/modules/SideKeyPlus'
 4. 如果没有配置对应动作，程序会尽量透传原始音量键事件。
 5. `TorchCtl` 使用 Android 隐藏 API 和 CameraManager，部分 ROM 可能限制较多。
 6. 手电筒亮度等级并非所有设备都支持。
-7. 修改 `config.ini` 后无需重启，`skp-keyd` 会定时自动重新加载配置。
+7. 修改 `config.ini` 后无需重启，`skp-keyd` 会按文件变化自动重新加载配置；日志位于 `/data/adb/SideKeyPlus/log/keyd.log`，三段键日志位于 `/data/adb/SideKeyPlus/log/backend.log`。

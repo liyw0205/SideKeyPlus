@@ -77,6 +77,18 @@ config_get() {
   bb grep -E "^$KEY=" "$CONFIG_PATH" 2>/dev/null | bb tail -n 1 | bb sed 's/^[^=]*=//'
 }
 
+config_bool() {
+  value="$(printf '%s' "$1" | bb tr '[:upper:]' '[:lower:]' 2>/dev/null)"
+  case "$value" in
+    1|true|yes|on)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 config_apply_updates() {
   UPDATES_FILE="$1"
   [ -n "$UPDATES_FILE" ] || return 1

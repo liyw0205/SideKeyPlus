@@ -73,6 +73,9 @@ static InputDev g_devs[MAX_DEVICES];
 static int g_dev_count = 0;
 
 static Config g_cfg = {0};
+static bool g_config_loaded = false;
+static time_t g_config_mtime = 0;
+static off_t g_config_size = 0;
 
 static int g_uinput_fd = -1;
 
@@ -85,6 +88,7 @@ static int64_t g_pending_up_time = 0;
 static int64_t g_pending_down_time = 0;
 
 static bool g_both_fired = false;
+static bool g_rescan_requested = true;
 
 static int64_t now_ms(void) {
     struct timespec ts;
@@ -157,6 +161,19 @@ static void trim(char *s) {
 }
 
 static void reload_config(void) {
+    struct stat config_stat;
+    bool config_exists = stat(CONFIG_PATH, &config_stat) == 0;
+
+    if (g_config_loaded && config_exists &&
+        config_stat.st_mtime == g_config_mtime &&
+        config_stat.st_size == g_config_size) {
+        return;
+    }
+
+    if (g_config_loaded && !config_exists && g_config_mtime == 0) {
+        return;
+    }
+
     Config old = g_cfg;
     Config new_cfg;
     memset(&new_cfg, 0, sizeof(new_cfg));
@@ -164,7 +181,12 @@ static void reload_config(void) {
     FILE *fp = fopen(CONFIG_PATH, "r");
     if (!fp) {
         g_cfg = new_cfg;
-        log_line("reload_config: config missing, use default");
+        g_config_loaded = true;
+        g_config_mtime = 0;
+        g_config_size = 0;
+        if (memcmp(&old, &g_cfg, sizeof(Config)) != 0) {
+            log_line("reload_config: config missing, use default");
+        }
         return;
     }
 
@@ -209,6 +231,9 @@ static void reload_config(void) {
     fclose(fp);
 
     g_cfg = new_cfg;
+    g_config_loaded = true;
+    g_config_mtime = config_exists ? config_stat.st_mtime : 0;
+    g_config_size = config_exists ? config_stat.st_size : 0;
 
     log_line("reload_config: VOLUME_KEY_ENABLE=%d BLOCK_VOLUME_KEY=%d UP_CLICK=%d UP_DOUBLE=%d UP_LONG=%d DOWN_CLICK=%d DOWN_DOUBLE=%d DOWN_LONG=%d BOTH=%d",
              g_cfg.volume_key_enable ? 1 : 0,
@@ -479,9 +504,17 @@ static void run_action_async(const char *event) {
     pid_t pid = fork();
     if (pid == 0) {
         setsid();
+        for (int i = 0; i < g_dev_count; i++) {
+            if (g_devs[i].fd >= 0) close(g_devs[i].fd);
+        }
+        if (g_uinput_fd >= 0) close(g_uinput_fd);
         execl("/system/bin/sh", "sh", RUN_ACTION, event, (char *)NULL);
         execl("/bin/sh", "sh", RUN_ACTION, event, (char *)NULL);
         _exit(127);
+    }
+
+    if (pid < 0) {
+        log_line("run_action fork failed: errno=%d %s", errno, strerror(errno));
     }
 }
 
@@ -567,6 +600,40 @@ static void stop_injected_long_press(int key, KeyState *st) {
     emit_key(key, 0);
     st->injected_down = false;
     log_line("uinput key up for long press: code=%d", key);
+}
+
+static void reset_input_state(void) {
+    stop_injected_long_press(KEY_VOLUMEUP, &g_up);
+    stop_injected_long_press(KEY_VOLUMEDOWN, &g_down);
+    memset(&g_up, 0, sizeof(g_up));
+    memset(&g_down, 0, sizeof(g_down));
+    g_pending_up_click = false;
+    g_pending_down_click = false;
+    g_pending_up_time = 0;
+    g_pending_down_time = 0;
+    g_both_fired = false;
+}
+
+static void remove_device_fd(int fd) {
+    for (int i = 0; i < g_dev_count; i++) {
+        if (g_devs[i].fd != fd) continue;
+
+        log_line("remove input device: %s name=%s fd=%d",
+                 g_devs[i].path, g_devs[i].name, fd);
+        if (g_devs[i].grabbed) {
+            ioctl(g_devs[i].fd, EVIOCGRAB, 0);
+        }
+        close(g_devs[i].fd);
+
+        for (int j = i + 1; j < g_dev_count; j++) {
+            g_devs[j - 1] = g_devs[j];
+        }
+        g_dev_count--;
+        memset(&g_devs[g_dev_count], 0, sizeof(g_devs[g_dev_count]));
+        reset_input_state();
+        g_rescan_requested = true;
+        return;
+    }
 }
 
 static void check_long_press(void) {
@@ -680,7 +747,7 @@ static void handle_key_event(int code, int value) {
 }
 
 static void event_loop(void) {
-    int64_t last_scan = 0;
+    int64_t last_scan = now_ms();
     int64_t last_config = 0;
 
     while (g_running) {
@@ -694,11 +761,11 @@ static void event_loop(void) {
             last_config = t;
         }
 
-        if (g_dev_count == 0 || t - last_scan >= RESCAN_MS) {
-            if (g_dev_count == 0) {
-                scan_devices();
-            }
+        if (g_rescan_requested ||
+            (g_dev_count == 0 && t - last_scan >= RESCAN_MS)) {
+            scan_devices();
             last_scan = t;
+            g_rescan_requested = false;
         }
 
         struct pollfd pfds[MAX_DEVICES];
@@ -711,14 +778,33 @@ static void event_loop(void) {
             n++;
         }
 
-        int timeout = 50;
-        int ret = 0;
+        int timeout = 1000;
+        int64_t wait_ms = CONFIG_RELOAD_MS - (t - last_config);
+        if (wait_ms < timeout) timeout = wait_ms > 0 ? (int)wait_ms : 0;
 
-        if (n > 0) {
-            ret = poll(pfds, n, timeout);
-        } else {
-            usleep(timeout * 1000);
+        if (g_dev_count == 0) {
+            wait_ms = RESCAN_MS - (t - last_scan);
+            if (wait_ms < timeout) timeout = wait_ms > 0 ? (int)wait_ms : 0;
         }
+
+        if (g_pending_up_click) {
+            wait_ms = DOUBLE_CLICK_MS - (t - g_pending_up_time);
+            if (wait_ms < timeout) timeout = wait_ms > 0 ? (int)wait_ms : 0;
+        }
+        if (g_pending_down_click) {
+            wait_ms = DOUBLE_CLICK_MS - (t - g_pending_down_time);
+            if (wait_ms < timeout) timeout = wait_ms > 0 ? (int)wait_ms : 0;
+        }
+        if (g_up.down && !g_up.long_fired) {
+            wait_ms = LONG_PRESS_MS - (t - g_up.down_time);
+            if (wait_ms < timeout) timeout = wait_ms > 0 ? (int)wait_ms : 0;
+        }
+        if (g_down.down && !g_down.long_fired) {
+            wait_ms = LONG_PRESS_MS - (t - g_down.down_time);
+            if (wait_ms < timeout) timeout = wait_ms > 0 ? (int)wait_ms : 0;
+        }
+
+        int ret = poll(pfds, (nfds_t)n, timeout);
 
         check_long_press();
         fire_pending_clicks_if_due();
@@ -733,19 +819,30 @@ static void event_loop(void) {
         if (ret == 0) continue;
 
         for (int i = 0; i < n; i++) {
-            if (!(pfds[i].revents & POLLIN)) continue;
+            short revents = pfds[i].revents;
+            if (!revents) continue;
 
-            struct input_event ev;
+            bool device_bad = (revents & (POLLERR | POLLHUP | POLLNVAL)) != 0;
 
-            while (read(pfds[i].fd, &ev, sizeof(ev)) == sizeof(ev)) {
-                if (ev.type == EV_KEY &&
-                    (ev.code == KEY_VOLUMEUP || ev.code == KEY_VOLUMEDOWN)) {
-                    handle_key_event(ev.code, ev.value);
+            if (revents & POLLIN) {
+                struct input_event ev;
+                ssize_t rd;
+
+                while ((rd = read(pfds[i].fd, &ev, sizeof(ev))) == sizeof(ev)) {
+                    if (ev.type == EV_KEY &&
+                        (ev.code == KEY_VOLUMEUP || ev.code == KEY_VOLUMEDOWN)) {
+                        handle_key_event(ev.code, ev.value);
+                    }
+                }
+
+                if (rd == 0 || (rd < 0 && errno != EAGAIN && errno != EINTR)) {
+                    device_bad = true;
                 }
             }
 
-            if (pfds[i].revents & (POLLERR | POLLHUP | POLLNVAL)) {
-                log_line("device state changed: fd=%d revents=0x%x", pfds[i].fd, pfds[i].revents);
+            if (device_bad) {
+                log_line("device state changed: fd=%d revents=0x%x", pfds[i].fd, revents);
+                remove_device_fd(pfds[i].fd);
             }
         }
     }
@@ -763,6 +860,7 @@ int main(void) {
     g_uinput_fd = setup_uinput();
 
     scan_devices();
+    g_rescan_requested = false;
 
     event_loop();
 

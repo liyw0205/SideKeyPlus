@@ -162,7 +162,7 @@ VALUE_UP=$(default_or_old VALUE_UP 1)
 VALUE_MID=$(default_or_old VALUE_MID 2)
 VALUE_DOWN=$(default_or_old VALUE_DOWN 3)
 
-POLL_INTERVAL=$(default_or_old POLL_INTERVAL 0.25)
+POLL_INTERVAL=$(default_or_old POLL_INTERVAL 0.5)
 
 VOLUME_KEY_ENABLE=$(default_or_old VOLUME_KEY_ENABLE false)
 BLOCK_VOLUME_KEY=$(default_or_old BLOCK_VOLUME_KEY false)
