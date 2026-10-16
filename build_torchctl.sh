@@ -22,7 +22,7 @@ fi
 javac -version
 
 echo "[2/5] download r8/d8 if needed"
-if [ ! -f "$R8_JAR" ]; then
+if ! command -v d8 >/dev/null 2>&1 && [ ! -f "$R8_JAR" ]; then
   echo "download: $R8_URL"
   curl -L -o "$R8_JAR" "$R8_URL"
 fi
@@ -38,11 +38,19 @@ echo "[4/5] dex by d8"
 rm -rf "$OUT_DIR"
 mkdir -p "$OUT_DIR"
 
-java -cp "$R8_JAR" com.android.tools.r8.D8 \
-  --release \
-  --min-api 23 \
-  --output "$OUT_DIR" \
-  TorchCtl*.class
+if command -v d8 >/dev/null 2>&1; then
+  d8 \
+    --release \
+    --min-api 23 \
+    --output "$OUT_DIR" \
+    TorchCtl*.class
+else
+  java -cp "$R8_JAR" com.android.tools.r8.D8 \
+    --release \
+    --min-api 23 \
+    --output "$OUT_DIR" \
+    TorchCtl*.class
+fi
 
 echo "[5/5] pack jar"
 rm -f "$FINAL_JAR"

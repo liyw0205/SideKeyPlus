@@ -1,7 +1,7 @@
 id=SideKeyPlus
 name=SideKey+
-version=1.1.1
-versionCode=20261016
+version=1.1.2
+versionCode=20261017
 updateJson=https://raw.githubusercontent.com/liyw0205/SideKeyPlus/main/version.json
 author=余生只有凄渺
 description=一加三段式侧边键与音量键增强，支持上拨、上复位、下拨、下复位、音量键单击/双击/长按、音量±同时按自定义动作，支持手电筒、打开应用、链接、微信/支付宝快捷入口和自定义 Shell

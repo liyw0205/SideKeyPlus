@@ -5,6 +5,7 @@ import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.util.List;
 
 public class TorchCtl {
     private static final String STATE_FILE = "/data/adb/SideKeyPlus/pid/flashlight.state";
@@ -25,6 +26,11 @@ public class TorchCtl {
             Object context = getSystemContext();
             if (context == null) {
                 fail("context is null", 2);
+                return;
+            }
+
+            if ("apps".equals(cmd)) {
+                printApps(context);
                 return;
             }
 
@@ -189,6 +195,7 @@ public class TorchCtl {
         out("usage:");
         out("  TorchCtl info");
         out("  TorchCtl list");
+        out("  TorchCtl apps");
         out("  TorchCtl on");
         out("  TorchCtl on <cameraId>");
         out("  TorchCtl hold");
@@ -391,6 +398,86 @@ public class TorchCtl {
     private static Object getCameraManager(Object context) throws Exception {
         Method getSystemService = context.getClass().getMethod("getSystemService", String.class);
         return getSystemService.invoke(context, "camera");
+    }
+
+    private static void printApps(Object context) {
+        try {
+            Method getPackageManager = context.getClass().getMethod("getPackageManager");
+            Object packageManager = getPackageManager.invoke(context);
+            Class<?> appInfoClass = Class.forName("android.content.pm.ApplicationInfo");
+            Class<?> packageManagerClass = Class.forName("android.content.pm.PackageManager");
+            Method getInstalledApplications = packageManagerClass.getMethod(
+                    "getInstalledApplications",
+                    int.class
+            );
+            Method getApplicationLabel = packageManagerClass.getMethod(
+                    "getApplicationLabel",
+                    appInfoClass
+            );
+            Method getLaunchIntentForPackage = packageManagerClass.getMethod(
+                    "getLaunchIntentForPackage",
+                    String.class
+            );
+            Field packageNameField = appInfoClass.getField("packageName");
+
+            Object result = getInstalledApplications.invoke(packageManager, 0);
+            StringBuilder json = new StringBuilder("{\"ok\":true,\"apps\":[");
+            boolean first = true;
+
+            if (result instanceof List) {
+                for (Object app : (List<?>) result) {
+                    if (app == null) continue;
+
+                    try {
+                        Object packageValue = packageNameField.get(app);
+                        String pkg = packageValue == null ? "" : String.valueOf(packageValue);
+                        if (pkg.length() == 0) continue;
+                        if (getLaunchIntentForPackage.invoke(packageManager, pkg) == null) continue;
+
+                        Object labelValue = getApplicationLabel.invoke(packageManager, app);
+                        String label = labelValue == null ? pkg : String.valueOf(labelValue).trim();
+                        if (label.length() == 0) label = pkg;
+
+                        if (!first) json.append(',');
+                        first = false;
+                        json.append("{\"name\":\"")
+                                .append(jsonEscape(label))
+                                .append("\",\"package\":\"")
+                                .append(jsonEscape(pkg))
+                                .append("\"}");
+                    } catch (Throwable e) {
+                        debugThrowable("debug: app metadata failed", e);
+                    }
+                }
+            }
+
+            json.append("]}");
+            out(json.toString());
+        } catch (Throwable e) {
+            debugThrowable("debug: list apps failed", e);
+            out("{\"ok\":false,\"apps\":[]}");
+        }
+    }
+
+    private static String jsonEscape(String value) {
+        StringBuilder out = new StringBuilder();
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            switch (c) {
+                case '\\': out.append("\\\\"); break;
+                case '"': out.append("\\\""); break;
+                case '\n': out.append("\\n"); break;
+                case '\r': out.append("\\r"); break;
+                case '\t': out.append("\\t"); break;
+                default:
+                    if (c < 0x20) {
+                        out.append(String.format("\\u%04x", (int) c));
+                    } else {
+                        out.append(c);
+                    }
+            }
+        }
+        return out.toString();
     }
 
     private static String[] getCameraIdList(Object cameraManager) throws Exception {

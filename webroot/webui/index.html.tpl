@@ -586,9 +586,10 @@ code{
       <div class="sub" id="actionDefaultsHint">当前动作可用的默认参数。</div>
 
       <div id="defaultPackageWrap" class="field hidden">
-        <label class="label">默认包名</label>
-        <input id="DEFAULT_PACKAGE" class="input" type="text" placeholder="com.tencent.mm">
-        <div class="help">打开应用未填写包名时使用。</div>
+        <label class="label">默认应用</label>
+        <input id="DEFAULT_PACKAGE" class="input" type="text" placeholder="搜索应用名称或包名">
+        <div id="defaultAppHelp" class="help">打开应用未选择具体应用时使用。</div>
+        <div class="suggest" id="defaultAppSuggest"></div>
       </div>
 
       <div id="defaultUrlWrap" class="field hidden">
@@ -673,6 +674,7 @@ const state = {
   apps:[],
   appsLoaded:false,
   appsLoading:false,
+  appPickerTarget:'actionArg',
   currentAction:'UP',
   statusTimer:null,
   currentTab:'home'
@@ -773,6 +775,7 @@ function fillConfig(cfg){
     const el=$(k);
     if(el) el.value = cfg[k] ?? '';
   });
+  delete $('DEFAULT_PACKAGE').dataset.package;
 
   if($('WEB_PORT') && !$('WEB_PORT').value){
     $('WEB_PORT').value = WEB_PORT || '8777';
@@ -809,7 +812,7 @@ function collectBaseConfig(){
     POLL_INTERVAL:$('POLL_INTERVAL').value.trim(),
     VOLUME_KEY_ENABLE:$('VOLUME_KEY_ENABLE').checked ? 'true' : 'false',
     BLOCK_VOLUME_KEY:$('BLOCK_VOLUME_KEY').checked ? 'true' : 'false',
-    DEFAULT_PACKAGE:$('DEFAULT_PACKAGE').value.trim(),
+    DEFAULT_PACKAGE:selectedPackageValue('DEFAULT_PACKAGE'),
     DEFAULT_URL:$('DEFAULT_URL').value.trim(),
     WECHAT_SCAN_COMPONENT:$('WECHAT_SCAN_COMPONENT').value.trim(),
     WECHAT_PAY_COMPONENT:$('WECHAT_PAY_COMPONENT').value.trim(),
@@ -826,11 +829,26 @@ function toForm(obj){
   return p.toString();
 }
 
+function selectedPackageValue(inputId){
+  const input = $(inputId);
+  if(!input) return '';
+  const value = input.value.trim();
+  const selected = input.dataset.package || appByPackage(value)?.package || appByName(value)?.package;
+  if(selected) return selected;
+  if(state.appsLoaded && value && !value.includes('.')) return '';
+  return value;
+}
+
 async function saveBaseConfig(){
   const btn = $('fabMain1');
 
   try{
     setBtnLoading(btn, true, '保存中');
+
+    if($('DEFAULT_PACKAGE').value.trim() && !selectedPackageValue('DEFAULT_PACKAGE')){
+      showToast('请从应用列表选择默认应用');
+      return;
+    }
 
     const form = collectBaseConfig();
     const r = await api('save_config', toForm(form));
@@ -955,7 +973,10 @@ function actionDisplayText(eventName){
 
   if(type === '0') return '无';
   if(type === '1') return '自定义 Shell';
-  if(type === '6') return arg ? `打开应用：${arg}` : '打开应用';
+  if(type === '6'){
+    const app = appByPackage(arg);
+    return arg ? `打开应用：${app ? app.name : arg}` : '打开应用';
+  }
   if(type === '7') return arg ? `打开链接：${arg}` : '打开链接';
   if(type === '8') return `手电筒：${flashlightModeText(arg)}`;
 
@@ -991,6 +1012,7 @@ function renderActionEditor(){
   ).join('');
 
   $('actionArg').value = state.config[`ACTION_${ev}_ARG`] ?? '';
+  delete $('actionArg').dataset.package;
   $('actionShell').value = state.config[`ACTION_${ev}_SHELL`] ?? '#!/system/bin/sh\n# 在这里写自定义 shell';
 
   updateActionSubFields();
@@ -1021,6 +1043,8 @@ function persistCurrentActionForm(){
     state.config[`ACTION_${ev}_ARG`] = '';
   } else if(type === '8'){
     state.config[`ACTION_${ev}_ARG`] = readFlashlightArgFromForm();
+  } else if(type === '6'){
+    state.config[`ACTION_${ev}_ARG`] = selectedPackageValue('actionArg');
   } else {
     state.config[`ACTION_${ev}_ARG`] = $('actionArg').value ?? '';
   }
@@ -1044,8 +1068,9 @@ function updateActionSubFields(){
   } else if(type === '6'){
     $('actionArgWrap').classList.remove('hidden');
     $('appSuggestWrap').classList.remove('hidden');
-    $('actionArgLabel').textContent = '应用包名';
-    $('actionArgHelp').textContent = '输入包名会自动模糊匹配。留空时使用下方默认包名。';
+    $('actionArgLabel').textContent = '应用';
+    $('actionArgHelp').textContent = '输入应用名称搜索并点击选择；配置仍保存为包名。留空时使用下方默认应用。';
+    renderSelectedAppInput();
     renderAppSuggest($('actionArg').value || '');
   } else if(type === '7'){
     $('actionArgWrap').classList.remove('hidden');
@@ -1133,6 +1158,31 @@ function renderActionDefaults(){
   }
 }
 
+function appByPackage(pkg){
+  const target = String(pkg || '');
+  return (state.apps || []).find(app => String(app.package || '') === target) || null;
+}
+
+function appByName(name){
+  const target = String(name || '').trim().toLowerCase();
+  if(!target) return null;
+  return (state.apps || []).find(app => String(app.name || '').trim().toLowerCase() === target) || null;
+}
+
+function renderSelectedAppInput(){
+  const input = $('actionArg');
+  if(!input) return;
+  if(document.activeElement === input && input.value.trim() && !input.dataset.package) return;
+
+  const pkg = String(state.config[`ACTION_${state.currentAction}_ARG`] || '');
+  const app = appByPackage(pkg);
+  input.dataset.package = pkg;
+  input.value = app ? String(app.name || pkg) : pkg;
+  if(app){
+    $('actionArgHelp').textContent = `已选择：${app.name}（${pkg}）。输入名称可重新搜索。`;
+  }
+}
+
 function collectActionDefaultConfig(){
   const keys = [
     'DEFAULT_PACKAGE',
@@ -1150,7 +1200,7 @@ function collectActionDefaultConfig(){
   keys.forEach(k => {
     const el = $(k);
     if(el){
-      out[k] = el.value.trim();
+      out[k] = k === 'DEFAULT_PACKAGE' ? selectedPackageValue(k) : el.value.trim();
       state.config[k] = out[k];
     }
   });
@@ -1191,6 +1241,11 @@ async function saveCurrentAction(){
 
     const ev = state.currentAction;
     ensureActionDefaults(ev);
+    if(String(state.config[`ACTION_${ev}_TYPE`]) === '6' &&
+       $('actionArg').value.trim() && !selectedPackageValue('actionArg')){
+      showToast('请从应用列表选择应用');
+      return;
+    }
 
     const payload = collectActionDefaultConfig();
     payload[`ACTION_${ev}_TYPE`] = state.config[`ACTION_${ev}_TYPE`] ?? '0';
@@ -1201,19 +1256,19 @@ async function saveCurrentAction(){
     const actionType = String(payload[`ACTION_${ev}_TYPE`] ?? '0');
     const isVolumeAction = ev.startsWith('VOLUME_');
     let autoEnabled = false;
-    let backendStarted = false;
+    let backendRefreshed = false;
     if(isVolumeAction && actionType !== '0' && !boolStr(state.config.VOLUME_KEY_ENABLE)){
       await api('save_config', toForm({VOLUME_KEY_ENABLE:'true'}));
       await api('start_keyd', '');
       autoEnabled = true;
     }
-    if(!isVolumeAction && actionType !== '0' && boolStr(state.config.BACKEND_ENABLE)){
-      await api('start_slider_backend', '');
-      backendStarted = true;
+    if(!isVolumeAction && boolStr(state.config.BACKEND_ENABLE)){
+      await api('restart_slider_backend', '');
+      backendRefreshed = true;
     }
     let message = r.message || `已保存 ${ev}`;
     if(autoEnabled) message += '，并已启用音量键服务';
-    if(backendStarted) message += '，三段键后端已启动';
+    if(backendRefreshed) message += '，三段键后端已刷新';
     showToast(message);
     await loadConfig();
     renderHomeActionOverview();
@@ -1245,7 +1300,15 @@ async function loadApps(force=false){
   try{
     const r = await api('apps');
     state.apps = Array.isArray(r.apps) ? r.apps : [];
+    state.apps.sort((a,b)=>String(a.name || '').localeCompare(String(b.name || ''), 'zh-CN'));
     state.appsLoaded = true;
+    renderSelectedDefaultAppInput();
+    renderAppSuggest($('DEFAULT_PACKAGE')?.value || '', 'defaultAppSuggest', 'DEFAULT_PACKAGE');
+    if(String($('actionType')?.value || '') === '6'){
+      renderSelectedAppInput();
+      renderAppSuggest($('actionArg')?.value || '');
+    }
+    renderHomeActionOverview();
   }catch(e){
     state.apps = [];
     state.appsLoaded = false;
@@ -1255,8 +1318,9 @@ async function loadApps(force=false){
   }
 }
 
-function renderAppSuggest(keyword){
-  const box = $('appSuggest');
+function renderAppSuggest(keyword, boxId='appSuggest', inputId='actionArg'){
+  const box = $(boxId);
+  if(!box) return;
   const q = (keyword || '').trim().toLowerCase();
 
   if(state.appsLoading){
@@ -1275,7 +1339,7 @@ function renderAppSuggest(keyword){
   list = list.slice(0, 24);
 
   box.innerHTML = list.map(app => `
-    <div class="app-item" onclick="chooseApp('${escapeJs(app.package || '')}')">
+    <div class="app-item" onclick="chooseApp('${escapeJs(app.package || '')}','${inputId}')">
       <div class="meta">
         <div class="name">${escapeHtml(app.name || app.package || '')}</div>
         <div class="pkg">${escapeHtml(app.package || '')}</div>
@@ -1284,10 +1348,37 @@ function renderAppSuggest(keyword){
   `).join('') || '<div class="help">没有匹配到应用</div>';
 }
 
-function chooseApp(pkg){
-  $('actionArg').value = pkg;
-  state.config[`ACTION_${state.currentAction}_ARG`] = pkg;
-  showToast('已选择应用：' + pkg);
+function renderSelectedDefaultAppInput(){
+  const input = $('DEFAULT_PACKAGE');
+  if(!input) return;
+  if(document.activeElement === input && input.value.trim() && !input.dataset.package) return;
+  const pkg = String(state.config.DEFAULT_PACKAGE || '');
+  const app = appByPackage(pkg);
+  input.dataset.package = pkg;
+  input.value = app ? String(app.name || pkg) : pkg;
+  $('defaultAppHelp').textContent = app
+    ? `已选择：${app.name}（${pkg}）。输入名称可重新搜索。`
+    : '打开应用未选择具体应用时使用。';
+}
+
+function chooseApp(pkg, inputId=state.appPickerTarget){
+  const app = appByPackage(pkg);
+  const input = $(inputId);
+  if(!input) return;
+  input.value = app ? String(app.name || pkg) : pkg;
+  input.dataset.package = pkg;
+  if(inputId === 'DEFAULT_PACKAGE'){
+    state.config.DEFAULT_PACKAGE = pkg;
+    $('defaultAppHelp').textContent = app
+      ? `已选择：${app.name}（${pkg}）。输入名称可重新搜索。`
+      : `已选择包名：${pkg}`;
+  }else{
+    state.config[`ACTION_${state.currentAction}_ARG`] = pkg;
+    $('actionArgHelp').textContent = app
+      ? `已选择：${app.name}（${pkg}）。输入名称可重新搜索。`
+      : `已选择包名：${pkg}`;
+  }
+  showToast('已选择应用：' + (app ? app.name : pkg));
 }
 
 function setLinkButton(id, url, text){
@@ -1410,10 +1501,22 @@ $('actionType').addEventListener('change', ()=>{
 
 $('actionArg').addEventListener('input', ()=>{
   const type = $('actionType').value;
-  state.config[`ACTION_${state.currentAction}_ARG`] = $('actionArg').value;
+  state.appPickerTarget = 'actionArg';
+  if(type === '6') delete $('actionArg').dataset.package;
+  state.config[`ACTION_${state.currentAction}_ARG`] = type === '6'
+    ? selectedPackageValue('actionArg')
+    : $('actionArg').value;
   if(type === '6'){
     renderAppSuggest($('actionArg').value || '');
   }
+});
+
+$('DEFAULT_PACKAGE').addEventListener('input', ()=>{
+  state.appPickerTarget = 'DEFAULT_PACKAGE';
+  delete $('DEFAULT_PACKAGE').dataset.package;
+  state.config.DEFAULT_PACKAGE = selectedPackageValue('DEFAULT_PACKAGE');
+  $('defaultAppHelp').textContent = '点击匹配的应用以选择；也可以输入包名。';
+  renderAppSuggest($('DEFAULT_PACKAGE').value || '', 'defaultAppSuggest', 'DEFAULT_PACKAGE');
 });
 
 $('flashlightMode').addEventListener('change', ()=>{

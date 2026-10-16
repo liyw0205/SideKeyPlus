@@ -386,6 +386,20 @@ print_json_header
 echo '{"ok":true,"message":"三段键后端启动命令已发送"}'
 EOF
 
+  cat > "$API_DIR/restart_slider_backend" <<'EOF'
+#!/system/bin/sh
+. /data/adb/SideKeyPlus/www/cgi-bin/api/common.sh
+
+(
+  /system/bin/sh /data/adb/modules/SideKeyPlus/service.sh stop_backend_only >/dev/null 2>&1
+  bb sleep 0.2
+  /system/bin/sh /data/adb/modules/SideKeyPlus/service.sh start_backend_only >/dev/null 2>&1
+) >/dev/null 2>&1
+
+print_json_header
+echo '{"ok":true,"message":"三段键后端已刷新"}'
+EOF
+
   cat > "$API_DIR/stop_slider_backend" <<'EOF'
 #!/system/bin/sh
 . /data/adb/SideKeyPlus/www/cgi-bin/api/common.sh
@@ -494,6 +508,18 @@ EOF
 . /data/adb/SideKeyPlus/www/cgi-bin/api/common.sh
 
 print_json_header
+
+JAR="$(torchctl_bin)"
+APP_PROCESS="$(torchctl_app_process)"
+if [ -n "$JAR" ] && [ -f "$JAR" ] && [ -n "$APP_PROCESS" ] && [ -x "$APP_PROCESS" ]; then
+  APP_JSON="$("$APP_PROCESS" -Djava.class.path="$JAR" /system/bin TorchCtl apps 2>/dev/null)"
+  case "$APP_JSON" in
+    '{"ok":true,"apps":'*)
+      printf '%s\n' "$APP_JSON"
+      exit 0
+      ;;
+  esac
+fi
 
 TMP="$PID_DIR/apps.json.tmp"
 : > "$TMP"
