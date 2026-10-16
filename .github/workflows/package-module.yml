@@ -77,7 +77,8 @@ jobs:
           git archive HEAD | tar -x -C staging
 
           rm -rf staging/.git staging/.github staging/.pytest_cache staging/__pycache__
-          rm -f staging/README.md \
+          rm -f staging/.gitignore \
+                staging/README.md \
                 staging/TorchCtl.java \
                 staging/skp-keyd.c \
                 staging/build.sh \
